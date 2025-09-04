@@ -107,21 +107,29 @@ fn main() -> Result<()> {
     let created_unix_ns = now_unix_ns();
     let start_instant = Instant::now();
 
-    // get server clock offset (best-effort)
+    // get server clock offset (best-effort using local timezone)
     let server_offset_ms = unsafe {
-        let mut dt = 0f64;
+        use time::{Date, Month, Time as TmTime, UtcOffset, PrimitiveDateTime};
+        let mut out = 0i64;
+        let mut dt = 0f64; // epoch seconds (if provided)
         let (mut y, mut mo, mut d, mut h, mut mi, mut s, mut ms) = (0, 0, 0, 0, 0, 0, 0);
-    let r = (dll.get_server_clock)(&mut dt, &mut y, &mut mo, &mut d, &mut h, &mut mi, &mut s, &mut ms);
-        let _local_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-        if r == NL_OK {
-            // Convert provided Y-M-D H:M:S.ms into UNIX ms (assume local timezone; skew estimate only)
-            let _tm = time::macros::datetime!(1970-01-01 00:00:00).assume_utc();
-            // we can't accurately convert without tz; approximate difference using fields
-            // Leave zero if uncertain
-            0i64
-        } else {
-            0i64
+        let r = (dll.get_server_clock)(&mut dt, &mut y, &mut mo, &mut d, &mut h, &mut mi, &mut s, &mut ms);
+        if r == NL_OK && y > 0 && (1..=12).contains(&mo) && d > 0 {
+            let month = Month::try_from(mo as u8).unwrap_or(Month::January);
+            if let (Ok(date), Ok(time)) = (
+                Date::from_calendar_date(y as i32, month, d as u8),
+                TmTime::from_hms_milli(h as u8, mi as u8, s as u8, ms as u16),
+            ) {
+                let pdt = PrimitiveDateTime::new(date, time);
+                if let Ok(offset) = UtcOffset::current_local_offset() {
+                    let odt = pdt.assume_offset(offset);
+                    let server_ms = odt.unix_timestamp_nanos() / 1_000_000; // i128
+                    let local_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i128;
+                    out = (server_ms - local_ms) as i64;
+                }
+            }
         }
+        out
     };
 
     let header = RecordFrame::Header(FileHeader {
@@ -338,9 +346,19 @@ fn main() -> Result<()> {
     }
 
     // Run until Ctrl+C
+    // Graceful shutdown: unsubscribe and finalize DLL, then exit
+    // Capture only function pointers (Copy) to avoid moving the DLL loader
+    let unsub_ob = dll.unsubscribe_offer_book;
+    let unsub_tk = dll.unsubscribe_ticker;
+    let finalize = dll.dll_finalize;
+    let tkr_for_shutdown = to_pwstr(&args.ticker);
+    let exc_for_shutdown = to_pwstr(&args.exchange);
     ctrlc::set_handler(move || {
-        // Close the channel to stop writer
-        // Safety: we can't finalize DLL here as we don't have handle; process will exit soon
+        unsafe {
+            (unsub_ob)(tkr_for_shutdown.as_ptr(), exc_for_shutdown.as_ptr());
+            (unsub_tk)(tkr_for_shutdown.as_ptr(), exc_for_shutdown.as_ptr());
+            (finalize)();
+        }
         std::process::exit(0);
     })
     .ok();
