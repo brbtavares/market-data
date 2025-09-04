@@ -12,7 +12,8 @@ use record::{EventKind, EventRecord, FileHeader, RawArrayBlock, RecordFrame};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use widestring::U16CStr;
 
@@ -71,7 +72,11 @@ fn write_frame(w: &mut BufWriter<File>, frame: &RecordFrame) -> Result<()> {
     Ok(())
 }
 
-fn writer_thread(out: PathBuf, rx: crossbeam_channel::Receiver<RecordFrame>) -> Result<()> {
+fn writer_thread(
+    out: PathBuf,
+    rx: crossbeam_channel::Receiver<RecordFrame>,
+    sd_rx: crossbeam_channel::Receiver<()>,
+) -> Result<()> {
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).ok();
@@ -79,10 +84,28 @@ fn writer_thread(out: PathBuf, rx: crossbeam_channel::Receiver<RecordFrame>) -> 
     }
     let file = OpenOptions::new().create(true).write(true).truncate(true).open(&out)?;
     let mut w = BufWriter::with_capacity(1 << 20, file); // 1 MiB buffer
-    for frame in rx {
-        write_frame(&mut w, &frame)?;
+    loop {
+        crossbeam_channel::select! {
+            recv(rx) -> msg => match msg {
+                Ok(frame) => {
+                    write_frame(&mut w, &frame)?;
+                }
+                Err(_) => {
+                    // Sender(s) dropped; flush and exit
+                    w.flush()?;
+                    break;
+                }
+            },
+            recv(sd_rx) -> _ => {
+                // Shutdown requested: drain remaining frames, flush, and exit
+                while let Ok(frame) = rx.try_recv() {
+                    write_frame(&mut w, &frame)?;
+                }
+                w.flush()?;
+                break;
+            }
+        }
     }
-    w.flush()?;
     Ok(())
 }
 
@@ -94,6 +117,8 @@ fn main() -> Result<()> {
 
     let (tx, rx) = bounded::<RecordFrame>(8192);
     let tx_writer = tx.clone();
+    // Shutdown signal channel for writer
+    let (sd_tx, sd_rx) = bounded::<()>(1);
 
     // Prepare header
     let created_unix_ns = now_unix_ns();
@@ -151,11 +176,15 @@ fn main() -> Result<()> {
     };
 
     // spawn writer thread
-    std::thread::spawn(move || {
-        if let Err(e) = writer_thread(out_path, rx) {
+    let writer_jh = std::thread::spawn(move || {
+        if let Err(e) = writer_thread(out_path, rx, sd_rx) {
             eprintln!("writer thread error: {e:#}");
         }
     });
+    // Expose writer handle to shutdown handler
+    static WRITER_JH_CELL: OnceCell<&'static Mutex<Option<std::thread::JoinHandle<()>>>> = OnceCell::new();
+    let writer_mutex: &'static Mutex<Option<std::thread::JoinHandle<()>>> = Box::leak(Box::new(Mutex::new(Some(writer_jh))));
+    WRITER_JH_CELL.set(writer_mutex).ok();
 
     let header = RecordFrame::Header(FileHeader {
         version: 1,
@@ -171,6 +200,7 @@ fn main() -> Result<()> {
     static SEQ_CELL: OnceCell<&'static AtomicU64> = OnceCell::new();
     static START_CELL: OnceCell<Instant> = OnceCell::new();
     static FREE_TX_CELL: OnceCell<&'static Sender<(usize, i32)>> = OnceCell::new();
+    static SHUTDOWN_CELL: OnceCell<&'static AtomicBool> = OnceCell::new();
 
     // Leak small singletons to get 'static references safely
     let tx_static: &'static Sender<RecordFrame> = Box::leak(Box::new(tx.clone()));
@@ -178,9 +208,14 @@ fn main() -> Result<()> {
     TX_CELL.set(tx_static).ok();
     SEQ_CELL.set(seq_static).ok();
     START_CELL.set(start_instant).ok();
+    let shut_static: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    SHUTDOWN_CELL.set(shut_static).ok();
 
     fn push_event(kind: EventKind) {
         if let (Some(tx), Some(seq), Some(start)) = (TX_CELL.get(), SEQ_CELL.get(), START_CELL.get()) {
+            if let Some(sh) = SHUTDOWN_CELL.get() {
+                if sh.load(Ordering::Relaxed) { return; }
+            }
             let n = seq.fetch_add(1, Ordering::Relaxed);
             let ev = EventRecord {
                 seq: n,
@@ -378,12 +413,27 @@ fn main() -> Result<()> {
     let finalize = dll.dll_finalize;
     let tkr_for_shutdown = to_pwstr(&args.ticker);
     let exc_for_shutdown = to_pwstr(&args.exchange);
+    // shutdown flag reference
+    let sh_flag = SHUTDOWN_CELL.get().cloned();
+    let sd_tx2 = sd_tx.clone();
     ctrlc::set_handler(move || {
+        if let Some(f) = &sh_flag { f.store(true, Ordering::Relaxed); }
         unsafe {
             (unsub_ob)(tkr_for_shutdown.as_ptr(), exc_for_shutdown.as_ptr());
             (unsub_tk)(tkr_for_shutdown.as_ptr(), exc_for_shutdown.as_ptr());
-            (finalize)();
         }
+        // Allow in-flight events to enqueue
+        std::thread::sleep(Duration::from_millis(100));
+        // Signal writer to shutdown and flush
+        let _ = sd_tx2.send(());
+        if let Some(mtx) = WRITER_JH_CELL.get() {
+            if let Ok(mut guard) = mtx.lock() {
+                if let Some(jh) = guard.take() {
+                    let _ = jh.join();
+                }
+            }
+        }
+        unsafe { (finalize)(); }
         std::process::exit(0);
     })
     .ok();
