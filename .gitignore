@@ -1,6 +1,5 @@
 Cargo.lock
 /dll
-/cpp_example
 /target
 .env
 manual_dll.md

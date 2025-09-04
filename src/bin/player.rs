@@ -1,3 +1,8 @@
+//! Player binary that replays recorded captures and reconstructs the L3 book.
+//!
+//! It reads frames written by the recorder (`len+crc32+bincode`), validates
+//! CRC, and applies Offer Book V2 actions to a local [`Book`]. It can also
+//! print trades. Use `--dump` or `--top` to print book snapshots.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use crc32fast::Hasher as Crc32;

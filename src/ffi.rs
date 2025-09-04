@@ -1,21 +1,14 @@
-//! # FFI da ProfitDLL
+//! ProfitDLL FFI bindings.
 //!
-//! Definições Rust para funções, tipos e constantes expostas pela ProfitDLL.dll,
-//! permitindo chamadas seguras/idiomáticas (carregamento estático e dinâmico).
+//! Rust definitions for functions, types, and constants exported by
+//! `ProfitDLL.dll`, enabling idiomatic calls via static or dynamic linking.
 //!
-//! ## Casos de uso
-//! - Registrar callbacks e traduzir estruturas C/Delphi -> Rust
-//! - Invocar APIs de ordem/posição/market data
-//!
-//! ## Notas
-//! - Assinaturas e layout baseados no MANUAL.md da DLL
-//! - Assegurar ABI "system" e strings UTF-16 (PWideChar)
-//!
-//! Notes
-//! - All exported functions use stdcall on 32-bit and Microsoft x64 on 64-bit. In Rust, use the "system" ABI.
-//! - Delphi PWideChar maps to UTF-16 pointer. We use *const u16 for input and *mut u16 for output buffers.
-//! - Integer=i32, Cardinal=u32, Byte=u8, Int64=i64, Double=f64, BOOL=i32.
-//! - TSystemTime matches WinAPI SYSTEMTIME layout.
+//! - Use the "system" ABI to match stdcall (x86) and Microsoft x64 (x86_64).
+//! - Delphi `PWideChar` maps to UTF-16 pointers; this file models those as
+//!   raw `*const u16`/`*mut u16`.
+//! - Common type mapping: Integer=i32, Cardinal=u32, Byte=u8, Int64=i64,
+//!   Double=f64, BOOL=i32.
+//! - `TSystemTime` mirrors WinAPI `SYSTEMTIME`.
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]

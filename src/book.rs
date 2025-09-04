@@ -1,27 +1,48 @@
+//! Order book model and parsers for ProfitDLL Offer Book V2.
+//!
+//! This module defines a minimal Level-3 order book representation (`Book` and
+//! `Entry`) plus helpers to apply actions emitted by the DLL:
+//! - Full book replacement (possibly split into multiple packets per side)
+//! - Add/Edit/Delete/DeleteFrom actions
+//! - Correct interpretation of `nPosition` as an index from the end
+//!
+//! The [`parse_block_v2`] function parses the raw array block layout captured
+//! by the recorder and returns vectors of entries along with footer flags.
+//! The [`OB_LAST_PACKET`] flag indicates that the block completes the current
+//! multi-packet transmission for the side.
 use anyhow::{bail, Result};
 use crate::record::RawArrayBlock;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
+    /// Price level.
     pub price: f64,
+    /// Quantity at that price for this offer.
     pub qty: i64,
+    /// Agent/broker ID.
     pub agent: i32,
+    /// Unique offer identifier.
     pub offer_id: i64,
+    /// Optional server-emitted date string.
     pub date: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Book {
+    /// Buy side, best price at index 0.
     pub buys: Vec<Entry>, // index 0 = best bid
+    /// Sell side, best price at index 0.
     pub sells: Vec<Entry>, // index 0 = best ask
 }
 
 impl Book {
+    /// Replace current book sides with the provided vectors (if any).
     pub fn apply_full(&mut self, buy: Option<Vec<Entry>>, sell: Option<Vec<Entry>>) {
         if let Some(b) = buy { self.buys = b; }
         if let Some(s) = sell { self.sells = s; }
     }
 
+    /// Convert `nPosition` (index from end) to zero-based index from start.
     fn index_from_end(len: usize, n_position: i32) -> Option<usize> {
         if n_position < 0 { return None; }
         let pos = n_position as usize;
@@ -29,17 +50,19 @@ impl Book {
         Some(len - pos - 1)
     }
 
+    /// Insert a new entry at a position derived from `nPosition`.
+    /// Insert a new entry at a position derived from `nPosition`.
     pub fn apply_add(&mut self, side: i32, n_position: i32, e: Entry) {
         let v = match side { 0 => &mut self.buys, 1 => &mut self.sells, _ => return };
         if v.is_empty() { v.push(e); return; }
-        if let Some(idx) = Self::index_from_end(v.len(), n_position) {
-            let insert_at = (idx + 1).min(v.len());
-            v.insert(insert_at, e);
-        } else {
-            v.push(e);
-        }
+        let insert_at = match Self::index_from_end(v.len(), n_position) {
+            Some(idx) => (idx + 1).min(v.len()),
+            None => v.len(),
+        };
+        v.insert(insert_at, e);
     }
 
+    /// Edit an existing entry at the position derived from `nPosition`.
     pub fn apply_edit(&mut self, side: i32, n_position: i32, e: Entry, has_price: bool, has_qtd: bool, has_agent: bool, has_offer_id: bool, has_date: bool) {
         let v = match side { 0 => &mut self.buys, 1 => &mut self.sells, _ => return };
         if let Some(idx) = Self::index_from_end(v.len(), n_position) {
@@ -53,21 +76,28 @@ impl Book {
         }
     }
 
+    /// Remove a single entry at the position derived from `nPosition`.
     pub fn apply_delete(&mut self, side: i32, n_position: i32) {
         let v = match side { 0 => &mut self.buys, 1 => &mut self.sells, _ => return };
         if let Some(idx) = Self::index_from_end(v.len(), n_position) { let _ = v.remove(idx); }
     }
 
+    /// Remove all entries from the derived index (inclusive) to the end of the side.
     pub fn apply_delete_from(&mut self, side: i32, n_position: i32) {
         let v = match side { 0 => &mut self.buys, 1 => &mut self.sells, _ => return };
-        if let Some(idx) = Self::index_from_end(v.len(), n_position) {
-            v.truncate(idx);
-        }
+        if let Some(idx) = Self::index_from_end(v.len(), n_position) { v.truncate(idx); }
     }
 }
 
+/// Offer book footer flag meaning "this block is the last packet for the side".
 pub const OB_LAST_PACKET: u32 = 1;
 
+/// Parse an Offer Book V2 raw array block captured from the DLL.
+///
+/// Returns the list of entries plus the footer flags (if present). The layout
+/// is: `[Q:i32][size:i32][entries...][flags:u32?]` where each entry contains
+/// `f64 price`, `i64 qty`, `i32 agent`, `i64 offer_id`, `i16 date_len`, then
+/// `date_len` bytes for a UTF-8 date string.
 pub fn parse_block_v2(block: &RawArrayBlock) -> Result<(Vec<Entry>, u32)> {
     let bytes = &block.bytes;
     if bytes.len() < 8 { bail!("array block too small"); }

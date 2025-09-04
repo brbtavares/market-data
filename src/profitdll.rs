@@ -1,8 +1,17 @@
+//! Dynamic loader and helpers for ProfitDLL.dll.
+//!
+//! This module binds the subset of functions required by the recorder using
+//! `libloading` at runtime. It also includes small helpers for UTF-16 string
+//! conversion and for copying the variable-sized raw array blocks delivered
+//! in Offer Book callbacks.
 use crate::ffi::*;
 use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
 use std::{ffi::c_void};
 
+/// Thin wrapper holding function pointers resolved from ProfitDLL.dll.
+///
+/// The `_lib` field keeps the library alive so symbols remain valid.
 pub struct ProfitDll {
     _lib: Library,
     pub dll_initialize_market_login: unsafe extern "system" fn(
@@ -41,6 +50,7 @@ pub struct ProfitDll {
 }
 
 impl ProfitDll {
+    /// Load `ProfitDLL.dll` from the given path and resolve required symbols.
     pub fn load(dll_path: &str) -> Result<Self> {
         unsafe {
             let lib = Library::new(dll_path).with_context(|| format!("loading {}", dll_path))?;
@@ -78,6 +88,8 @@ impl ProfitDll {
     }
 }
 
+/// Convert a Rust `&str` into a nul-terminated UTF-16 vector suitable for
+/// passing as `PWideChar` to the DLL.
 pub fn to_pwstr(s: &str) -> Vec<u16> {
     use widestring::U16CString;
     let ws = U16CString::from_str(s).expect("utf16");

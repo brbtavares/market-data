@@ -1,3 +1,15 @@
+//! Recorder binary for Market L3 Offer Book V2 and Time & Sales (ProfitDLL).
+//!
+//! Responsibilities:
+//! - Initialize and log in to the ProfitDLL market data API.
+//! - Register callbacks for Offer Book V2, trades, and state changes.
+//! - Copy raw array blocks immediately inside callbacks and forward them to a
+//!   background writer thread via a bounded channel.
+//! - Persist framed records with length + CRC32 and a bincode payload.
+//! - Compute a best-effort server clock offset and choose a default output
+//!   file name `captures/TICKER_YYYY_MM_DD.bin`.
+//! - Graceful shutdown on Ctrl+C: unsubscribe, stop enqueuing, drain/flush,
+//!   join writer, and finalize the DLL.
 mod ffi;
 mod profitdll;
 mod record;
@@ -72,6 +84,8 @@ fn write_frame(w: &mut BufWriter<File>, frame: &RecordFrame) -> Result<()> {
     Ok(())
 }
 
+/// Background writer that serializes frames and writes them with len+CRC32 framing.
+/// Reacts to a shutdown signal by draining the queue, flushing, then exiting.
 fn writer_thread(
     out: PathBuf,
     rx: crossbeam_channel::Receiver<RecordFrame>,
@@ -175,7 +189,7 @@ fn main() -> Result<()> {
         p
     };
 
-    // spawn writer thread
+    // spawn writer thread that drains frames and flushes on shutdown
     let writer_jh = std::thread::spawn(move || {
         if let Err(e) = writer_thread(out_path, rx, sd_rx) {
             eprintln!("writer thread error: {e:#}");
@@ -211,6 +225,7 @@ fn main() -> Result<()> {
     let shut_static: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
     SHUTDOWN_CELL.set(shut_static).ok();
 
+    /// Package and send an [`EventRecord`] to the writer (no DLL calls here).
     fn push_event(kind: EventKind) {
         if let (Some(tx), Some(seq), Some(start)) = (TX_CELL.get(), SEQ_CELL.get(), START_CELL.get()) {
             if let Some(sh) = SHUTDOWN_CELL.get() {
@@ -289,6 +304,7 @@ fn main() -> Result<()> {
     });
     }
 
+    /// Offer Book V2 callback. Copies raw array blocks and enqueues an event.
     unsafe extern "system" fn cb_offerbook_v2(
         _asset: TAssetIDRec,
         n_action: i32,
@@ -356,7 +372,7 @@ fn main() -> Result<()> {
     });
     }
 
-    // Register callbacks
+    // Register callbacks (ProfitDLL accepts NULL-able function pointers)
     unsafe {
         (dll.set_state_callback)(Some(cb_state));
         (dll.set_trade_callback)(Some(cb_trade));
@@ -397,7 +413,7 @@ fn main() -> Result<()> {
         if ret != NL_OK { eprintln!("DLLInitializeMarketLogin returned {}", ret); }
     }
 
-    // Subscribe
+    // Subscribe to ticker and Level-3 Offer Book stream
     let ticker = to_pwstr(&args.ticker);
     let exch = to_pwstr(&args.exchange);
     unsafe {
@@ -405,7 +421,7 @@ fn main() -> Result<()> {
         (dll.subscribe_offer_book)(ticker.as_ptr(), exch.as_ptr());
     }
 
-    // Run until Ctrl+C
+    // Run until Ctrl+C; graceful shutdown unsubscribes and drains writer
     // Graceful shutdown: unsubscribe and finalize DLL, then exit
     // Capture only function pointers (Copy) to avoid moving the DLL loader
     let unsub_ob = dll.unsubscribe_offer_book;
