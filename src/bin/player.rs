@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use crc32fast::Hasher as Crc32;
-use market_data::book::{parse_block_v2, Book, Entry, OB_LAST_PACKET};
+use market_data::book::{parse_block_v2, Book, Entry};
 use market_data::record::{EventKind, RecordFrame};
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -22,6 +22,10 @@ struct Args {
     /// Number of levels to print when dumping
     #[arg(long, default_value_t = 5)]
     top: usize,
+
+    /// Print trades (NewTrade and HistoryTrade) as they are read
+    #[arg(long, default_value_t = false)]
+    print_trades: bool,
 }
 
 fn read_u32<R: Read>(r: &mut R) -> std::io::Result<u32> {
@@ -124,7 +128,40 @@ fn main() -> Result<()> {
                             println!("---");
                         }
                     }
-                    _ => { /* ignore trades/state for book reconstruction */ }
+                    EventKind::NewTrade { date_str, trade_number, price, volume, qty, buy_agent, sell_agent, trade_type, edit_flag } => {
+                        if args.print_trades {
+                            println!(
+                                "TRADE new seq={} ts={} num={} price={} qty={} vol={} type={} buy_agent={} sell_agent={} edit={}",
+                                ev.seq,
+                                date_str,
+                                trade_number,
+                                price,
+                                qty,
+                                volume,
+                                trade_type,
+                                buy_agent,
+                                sell_agent,
+                                edit_flag
+                            );
+                        }
+                    }
+                    EventKind::HistoryTrade { date_str, trade_number, price, volume, qty, buy_agent, sell_agent, trade_type } => {
+                        if args.print_trades {
+                            println!(
+                                "TRADE hist seq={} ts={} num={} price={} qty={} vol={} type={} buy_agent={} sell_agent={}",
+                                ev.seq,
+                                date_str,
+                                trade_number,
+                                price,
+                                qty,
+                                volume,
+                                trade_type,
+                                buy_agent,
+                                sell_agent
+                            );
+                        }
+                    }
+                    _ => { /* ignore state */ }
                 }
             }
         }
