@@ -12,8 +12,33 @@ This tool records Offer Book L3 (OfferBookCallbackV2) and Time & Trades for a si
 ```powershell
 # Build
 cargo build
+```
 
-# Record WINFUT (BMF)
+You can configure via environment variables in a `.env` file (recommended) or pass CLI flags. Flags override env vars.
+
+### Option A — Using .env (no flags)
+
+1) Create `.env` from `.env.example` and fill values:
+
+```env
+DLL_PATH=dll/ProfitDLL.dll
+ACTIVATION_KEY=YOUR-ACTIVATION
+USER=YOUR-USER
+PASSWORD=YOUR-PASS
+TICKER=WINFUT
+EXCHANGE=F
+OUT_FILE=./captures/winfut.bin
+```
+
+2) Run:
+
+```powershell
+./target/debug/market_data
+```
+
+### Option B — Using flags (override .env)
+
+```powershell
 ./target/debug/market_data `
   --activation "YOUR-ACTIVATION" `
   --user "YOUR-USER" `
@@ -23,7 +48,7 @@ cargo build
   --out .\captures\winfut.bin
 ```
 
-Stop with Ctrl+C. The file contains length-prefixed frames with CRC.
+Stop with Ctrl+C. The writer creates parent folders if needed and writes length+CRC framed records.
 
 ## Output format (binary)
 
@@ -83,6 +108,18 @@ Implement the event loop in your player:
 - This binary focuses on recording. A separate player (replaying the log and reconstructing the L3 state) can be added later using the guidance above.
 - Channel size and IO buffer are tunable via code (8192 messages, 1MiB BufWriter).
 - Consider log rotation for long sessions.
+
+### Configuration via environment
+
+These variables are read at startup (via dotenv); CLI flags with the same fields override them:
+
+- DLL_PATH: path to ProfitDLL.dll (default: `dll/ProfitDLL.dll`)
+- ACTIVATION_KEY: activation/license key
+- USER: login user
+- PASSWORD: login password
+- TICKER: instrument symbol (e.g., WINFUT)
+- EXCHANGE: exchange code (e.g., F or B)
+- OUT_FILE: output file path (default: `capture.bin`)
 
 ```text
 Reconstruction contract

@@ -4,6 +4,7 @@ mod record;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use dotenvy::dotenv;
 use crc32fast::Hasher as Crc32;
 use crossbeam_channel::{bounded, Sender};
 use once_cell::sync::OnceCell;
@@ -22,31 +23,31 @@ use crate::profitdll::{copy_array_block, to_pwstr, ProfitDll};
 #[command(version, about = "L3 OfferBook + Trades recorder (ProfitDLL)")]
 struct Args {
     /// Path to ProfitDLL.dll
-    #[arg(long, default_value = "dll/ProfitDLL.dll")]
+    #[arg(long, env = "DLL_PATH", default_value = "dll/ProfitDLL.dll")]
     dll: String,
 
     /// Activation key
-    #[arg(long)]
+    #[arg(long, env = "ACTIVATION_KEY")]
     activation: String,
 
     /// Username
-    #[arg(long)]
+    #[arg(long, env = "USER")]
     user: String,
 
     /// Password
-    #[arg(long)]
+    #[arg(long, env = "PASSWORD")]
     password: String,
 
     /// Ticker symbol (e.g., WINFUT)
-    #[arg(long)]
+    #[arg(long, env = "TICKER")]
     ticker: String,
 
     /// Exchange code (e.g., F for BMF, B for Bovespa)
-    #[arg(long)]
+    #[arg(long, env = "EXCHANGE")]
     exchange: String,
 
     /// Output file path (.bin)
-    #[arg(long, default_value = "capture.bin")]
+    #[arg(long, env = "OUT_FILE", default_value = "capture.bin")]
     out: PathBuf,
 }
 
@@ -86,6 +87,8 @@ fn writer_thread(out: PathBuf, rx: crossbeam_channel::Receiver<RecordFrame>) -> 
 }
 
 fn main() -> Result<()> {
+    // Load environment variables from .env if present
+    let _ = dotenv();
     let args = Args::parse();
     let dll = ProfitDll::load(&args.dll).with_context(|| "Load ProfitDLL.dll")?;
 

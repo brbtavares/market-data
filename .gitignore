@@ -2,3 +2,4 @@ Cargo.lock
 /dll
 /cpp_example
 /target
+.env
