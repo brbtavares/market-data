@@ -27,7 +27,7 @@ USER=YOUR-USER
 PASSWORD=YOUR-PASS
 TICKER=WINFUT
 EXCHANGE=F
-OUT_FILE=./captures/winfut.bin
+OUT_FILE=./captures/winfut.bin  # optional; if not set, defaults to captures/TICKER_YYYY_MM_DD.bin
 ```
 
 2) Run:
@@ -45,7 +45,7 @@ OUT_FILE=./captures/winfut.bin
   --password "YOUR-PASS" `
   --ticker WINFUT `
   --exchange F `
-  --out .\captures\winfut.bin
+  --out .\captures\winfut.bin  # optional
 ```
 
 Stop with Ctrl+C. The writer creates parent folders if needed and writes length+CRC framed records.
@@ -108,6 +108,11 @@ Implement the event loop in your player:
 - This binary focuses on recording. A separate player (replaying the log and reconstructing the L3 state) can be added later using the guidance above.
 - Channel size and IO buffer are tunable via code (8192 messages, 1MiB BufWriter).
 - Consider log rotation for long sessions.
+
+### Output naming
+
+- Default output path: `captures/TICKER_YYYY_MM_DD.bin` (date prefers server date from DLL when available; otherwise local date).
+- Override with `--out` flag or `OUT_FILE` env.
 
 ### Configuration via environment
 

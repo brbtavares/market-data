@@ -46,9 +46,9 @@ struct Args {
     #[arg(long, env = "EXCHANGE")]
     exchange: String,
 
-    /// Output file path (.bin)
-    #[arg(long, env = "OUT_FILE", default_value = "capture.bin")]
-    out: PathBuf,
+    /// Output file path (.bin); defaults to captures/TICKER_YYYY_MM_DD.bin
+    #[arg(long, env = "OUT_FILE")]
+    out: Option<PathBuf>,
 }
 
 fn now_unix_ns() -> u128 {
@@ -95,19 +95,13 @@ fn main() -> Result<()> {
     let (tx, rx) = bounded::<RecordFrame>(8192);
     let tx_writer = tx.clone();
 
-    // spawn writer thread
-    let out_path = args.out.clone();
-    std::thread::spawn(move || {
-        if let Err(e) = writer_thread(out_path, rx) {
-            eprintln!("writer thread error: {e:#}");
-        }
-    });
-
     // Prepare header
     let created_unix_ns = now_unix_ns();
     let start_instant = Instant::now();
 
     // get server clock offset (best-effort using local timezone)
+    // Also capture server Y-M-D if provided for filename default
+    let mut server_date: Option<(i32, u8, u8)> = None;
     let server_offset_ms = unsafe {
         use time::{Date, Month, Time as TmTime, UtcOffset, PrimitiveDateTime};
         let mut out = 0i64;
@@ -120,6 +114,7 @@ fn main() -> Result<()> {
                 Date::from_calendar_date(y as i32, month, d as u8),
                 TmTime::from_hms_milli(h as u8, mi as u8, s as u8, ms as u16),
             ) {
+                server_date = Some((y as i32, mo as u8, d as u8));
                 let pdt = PrimitiveDateTime::new(date, time);
                 if let Ok(offset) = UtcOffset::current_local_offset() {
                     let odt = pdt.assume_offset(offset);
@@ -131,6 +126,36 @@ fn main() -> Result<()> {
         }
         out
     };
+
+    // Resolve output path
+    let out_path = if let Some(p) = args.out.clone() {
+        p
+    } else {
+        // Prefer server date if available, else local date
+        let (yy, mm, dd) = if let Some((y, m, d)) = server_date {
+            (y, m, d)
+        } else if let Ok(now) = time::OffsetDateTime::now_local() {
+            let d = now.date();
+            (d.year(), d.month() as u8, d.day())
+        } else {
+            // Fallback: use UNIX date from SystemTime
+            let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            let odt = time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+            let d = odt.date();
+            (d.year(), d.month() as u8, d.day())
+        };
+        let fname = format!("{}_{}_{:02}_{:02}.bin", args.ticker.to_uppercase(), yy, mm, dd);
+        let mut p = PathBuf::from("captures");
+        p.push(fname);
+        p
+    };
+
+    // spawn writer thread
+    std::thread::spawn(move || {
+        if let Err(e) = writer_thread(out_path, rx) {
+            eprintln!("writer thread error: {e:#}");
+        }
+    });
 
     let header = RecordFrame::Header(FileHeader {
         version: 1,
